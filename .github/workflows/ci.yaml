@@ -27,8 +27,6 @@ jobs:
             host: darwin-x64
           - os: windows-latest
             host: win32-x64
-          - os: windows-11-arm
-            host: win32-arm64
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     steps:
