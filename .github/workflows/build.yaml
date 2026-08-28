@@ -29,8 +29,6 @@ jobs:
             host: darwin-x64
           - os: windows-latest
             host: win32-x64
-          - os: windows-11-arm
-            host: win32-arm64
     steps:
       - uses: actions/checkout@v4
 
@@ -80,7 +78,6 @@ jobs:
             --linux-arm64-app apps/linux-arm64/hello-pear-qvac \
             --linux-x64-app apps/linux-x64/hello-pear-qvac \
             --win32-x64-app apps/win32-x64/hello-pear-qvac.exe \
-            --win32-arm64-app apps/win32-arm64/hello-pear-qvac.exe \
             --target deployment \
             --package package.json
           tar -C deployment -czf by-arch.tar.gz .
