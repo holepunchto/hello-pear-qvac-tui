@@ -1,16 +1,9 @@
-# hello-pear-qvac-tui
+# hello-pear-qvac
 
-> Pear Hello World for a local-AI CLI: [Bare] + [QVAC] on-device inference + a [bare-tui] interface, with peer-to-peer OTA updates.
+> Local AI in your terminal: [Bare] + [QVAC] on-device inference + a [bare-tui] interface, with peer-to-peer OTA updates.
 
-An ask/answer terminal app where the model runs **on your machine** — no API key, no network round-trip, no cloud. It is a template: the plumbing is finished and commented, the app itself is deliberately small so you can replace it.
-
-It is also built to be handed to an agent. Point yours at [CLAUDE.md](CLAUDE.md) and tell it what you want the app to do — that file carries the decisions, the extension points, and the traps this repo has already hit.
-
-Three pieces, each doing the job it is best at:
-
-- **[Bare]** — the runtime, plus [`pear-runtime`][pear-runtime] for peer-to-peer OTA updates and [`bare-build`][bare-build] for standalone binaries.
-- **[QVAC]** — `@qvac/inference` loads a GGUF model and streams tokens, in-process, on the Bare runtime.
-- **[bare-tui]** — the terminal UI, as an Elm-architecture model, with [bare-tui-updater] as the confirm gate for OTA updates.
+Ask a question, watch a model answer — running **on your machine**. No API key, no
+network round-trip, no cloud.
 
 ```
 ╭──────────────────────────────────────────────────────────────────╮
@@ -26,244 +19,260 @@ Three pieces, each doing the job it is best at:
 ╭──────────────────────────────────────────────────────────────────╮
 │ ❯ ask the model something…                                       │
 ╰──────────────────────────────────────────────────────────────────╯
-  ↵ send · pgup/pgdn scroll · ctrl+c quit
+  ↵ send · ctrl+t thinking · pgup/pgdn scroll · ctrl+c quit
 ```
 
-## Table of Contents
+This is a **template**. The plumbing is finished — ~540 lines of CLI, worker and
+IPC you can leave alone — and the ~620-line UI on top is meant to be thrown away.
+Chat is just the demo; see [Remix it](#remix-it).
 
-- [OS Support](#os-support)
-- [Requirements](#requirements)
-- [Development](#development)
-- [Architecture](#architecture)
-  - [Two workers, one pattern](#two-workers-one-pattern)
-  - [The inference protocol](#the-inference-protocol)
-  - [The UI](#the-ui)
-- [Making it yours](#making-it-yours)
-- [Peer-to-Peer Deployments](#peer-to-peer-deployments)
-- [Scripts](#scripts)
-- [Project Structure](#project-structure)
-- [Troubleshooting](#troubleshooting)
-
-For guidance on modifying this template — yours or an agent's — see [CLAUDE.md](CLAUDE.md).
-
-## OS Support
-
-- **macOS** — arm64, x64
-- **Linux** — arm64, x64
-- **Windows** — arm64, x64
-
-QVAC ships native prebuilds for each of these. GPU acceleration is picked up automatically where available (Vulkan, Metal); otherwise it runs on CPU.
-
-## Requirements
-
-- `npm` via [Node.js][nodejs]
-- [Bare][bare] — `npm i -g bare-runtime`
-- [pear][pear-docs] — `npx pear` (only needed to publish updates)
-- ~1 GB of disk for the default model, fetched once on first run
-
-## Development
+## Run it
 
 ```sh
 npm install
 npm start
 ```
 
-The first run downloads the model — the TUI shows a progress bar while it does — and caches it, so later runs start in a couple of seconds. Then type a question and press enter.
+First run downloads ~1 GB of model weights and caches them, so it takes a while;
+later runs start in seconds.
 
 | key           | does                                    |
 | ------------- | --------------------------------------- |
 | `↵`           | send                                    |
 | `esc`         | interrupt the answer being generated    |
+| `ctrl+t`      | show/hide a thinking model's reasoning  |
 | `pgup`/`pgdn` | scroll the transcript (mouse wheel too) |
 | `ctrl+c`      | interrupt if busy, otherwise quit       |
 
-Pick a different model without touching code:
+Needs `npm` via [Node.js][nodejs] and [Bare][bare] (`npm i -g bare-runtime`).
+Runs on macOS, Linux and Windows, arm64 and x64; QVAC ships native prebuilds for
+each and picks up GPU acceleration (Vulkan, Metal) where it exists.
+
+## What's here
+
+```
+bin.mjs               CLI flags, and the only place workers meet the UI
+├── ui/app.js         the whole UI — state, keys, layout    ← change how it looks
+│   └── transcript.js drawing one conversation entry
+├── lib/inference.js  client for the inference worker
+│   └── workers/qvac.js   loads the model, streams tokens   ← change what you ask
+├── app.js            client for the OTA update worker
+│   └── workers/main.js   the OTA update worker
+└── test/index.js     headless tests — no model, no GPU, ~150 ms
+```
+
+Two workers, one pattern. Each runs in its own Bare thread via
+`PearRuntime.run(...)` and is spoken to over a `FramedStream`; `lib/inference.js`
+is deliberately the same shape as `app.js`, so learning one teaches you the other.
+
+Inference gets a thread because **loading a GGUF blocks the thread it runs on**
+for seconds — in-process, the spinner visibly stutters. Generation itself is
+async and never blocks.
+
+## How one question flows
+
+Press enter, and the answer comes back through four layers. This is the whole
+architecture, once:
+
+```
+1  ui/app.js       _submit()      push an entry, return an `ask` Cmd
+2  lib/inference.js ask()         { t:'ask', id, history }  →  over the pipe
+3  workers/qvac.js  ask()         sdk.completion({ modelId, history })
+4  workers/qvac.js  contentDelta  { t:'delta', id, text }   ←  back over the pipe
+5  lib/inference.js _onmessage()  emits 'delta'
+6  bin.mjs          bridge        program.send({ type:'qvac.delta', ... })
+7  ui/app.js        update()      append to the live entry
+8  ui/app.js        view()        repaint
+9  workers/qvac.js  run.final     { t:'end', id, stopReason } settles it
+```
+
+The `id` is how a late token from an interrupted answer gets dropped instead of
+appended to the next one.
+
+**The load-bearing rule is that `ui/app.js` never imports the QVAC SDK.** That is
+why the tests run in 150 ms with no model and no GPU.
+
+One JSON object per frame, `t` is the tag:
+
+| direction | frame                            | meaning                           |
+| --------- | -------------------------------- | --------------------------------- |
+| →         | `{ t:'ask', id, history }`       | answer this conversation          |
+| →         | `{ t:'cancel', id }`             | stop that answer                  |
+| →         | `{ t:'close' }`                  | unload the model and shut down    |
+| ←         | `{ t:'progress', percentage }`   | model download, 0–100             |
+| ←         | `{ t:'loaded', model, ctxSize }` | resident and ready                |
+| ←         | `{ t:'thinking', id, text }`     | reasoning, from a thinking model  |
+| ←         | `{ t:'delta', id, text }`        | a token of the answer             |
+| ←         | `{ t:'end', id, stopReason }`    | finished, cancelled, or cut short |
+| ←         | `{ t:'error', id, message }`     | something went wrong              |
+| ←         | `{ t:'closed' }`                 | safe to terminate the thread      |
+
+Adding a message type means touching those same four files, in that order.
+
+## The two knobs that matter
 
 ```sh
-npm start -- --model LLAMA_3_2_3B_INST_Q4_0
+npm start -- --model LLAMA_3_2_3B_INST_Q4_0 --ctx 16384
 ```
 
-Any model constant exported by `@qvac/inference` works; the default lives in `package.json` under `qvac.model`.
+**`--model`** — any model constant exported by `@qvac/inference`. Nothing else
+changes. The default lives in `package.json` under `qvac.model`.
 
-### Context window
+**`--ctx`** — everything the model holds at once shares this budget: the
+conversation so far, its reasoning, and the answer it is writing. ⚠️ **The
+addon's default is 1024 tokens**, small enough that a couple of turns leave no
+room to reply and answers stop mid-sentence. This template sets `8192`. If an
+answer does hit the ceiling the app says so rather than pretending the model
+finished.
 
-```sh
-npm start -- --ctx 16384
+## Remix it
+
+### Same engine, different app
+
+Most ideas need no new dependency — just a different prompt and output format in
+`ask()` (`workers/qvac.js`):
+
+| Build                           | Change                                                    |
+| ------------------------------- | --------------------------------------------------------- |
+| Text adventure, dungeon master  | a system prompt; `responseFormat` for the game state      |
+| NPC dialogue                    | one `completion()` per character, a system prompt each    |
+| 20 questions, word games        | `responseFormat`, so a turn parses instead of scans       |
+| An agent that runs things       | `tools` on `completion()`; execute in the worker and loop |
+| Commit messages, diff explainer | pipe stdin in as the first history entry, drop the TUI    |
+| Notes or journal summariser     | same, plus `kvCache` to keep a long document resident     |
+
+`responseFormat` is the unlock for anything game-shaped: the model hands back
+parseable state instead of prose you have to regex.
+
+### Different engine
+
+`workers/qvac.js` registers exactly one plugin — nothing you don't register is
+linked in. Swap those two lines and install the peer dependency:
+
+| Plugin                     | Peer dependency                                      | Build                      |
+| -------------------------- | ---------------------------------------------------- | -------------------------- |
+| `llamacpp-completion`      | `@qvac/llm-llamacpp` + `@qvac/langdetect-text`       | chat, games, agents (here) |
+| `llamacpp-embedding`       | `@qvac/embed-llamacpp`                               | offline semantic search    |
+| `whispercpp-transcription` | `@qvac/asr-ggml`                                     | voice notes, live captions |
+| `tts-ggml`                 | `@qvac/tts-ggml`                                     | read answers aloud         |
+| `nmtcpp-translation`       | `@qvac/translation-nmtcpp` + `@qvac/langdetect-text` | an offline translator      |
+| `sdcpp-generation`         | `@qvac/diffusion-cpp`                                | sprite and asset generator |
+| `ggml-ocr`                 | `@qvac/ocr-ggml`                                     | screenshot → text          |
+| `ggml-classification`      | `@qvac/classification-ggml`                          | inbox triage, tagging      |
+
+Two traps, both cheap to avoid: peer dependencies are declared **optional**, so
+npm won't install them and a missing one shows up as `MODULE_NOT_FOUND` at
+runtime — install it explicitly. And npm's caret on a `0.x` version excludes the
+next minor, so `latest` can land outside the `^0.45.0` the SDK pins.
+
+The full table, including the non-obvious transitive peers, is in
+[CLAUDE.md](CLAUDE.md).
+
+### Just the SDK
+
+None of the above needs this template. The whole SDK, standalone:
+
+```js
+import {
+  registerPlugin,
+  loadModel,
+  completion,
+  unloadModel,
+  close,
+  LLAMA_3_2_1B_INST_Q4_0
+} from '@qvac/inference'
+import { llmPlugin } from '@qvac/inference/llamacpp-completion/plugin'
+
+registerPlugin(llmPlugin)
+
+const modelId = await loadModel({
+  modelSrc: LLAMA_3_2_1B_INST_Q4_0,
+  modelConfig: { ctx_size: 8192 }
+})
+
+const run = completion({ modelId, history: [{ role: 'user', content: 'Hi' }] })
+for await (const event of run.events) {
+  if (event.type === 'contentDelta') console.log(event.text)
+}
+
+await unloadModel({ modelId })
+await close()
 ```
 
-**The addon's default context is 1024 tokens** — small enough that a couple of turns of history leave no room to reply, and answers stop mid-sentence. This template sets `8192` (`qvac.ctxSize` in `package.json`). Everything the model holds at once lives in there: the conversation so far, its reasoning, and the answer it is writing. Raise it for long conversations, lower it to save memory.
+The file count here is the _app_, not the SDK.
 
-If an answer does hit the limit, the app says so rather than pretending the model finished:
+### Delete what you don't need
 
-```
- ⚠ stopped at the 8192 token context limit — raise --ctx, or start a new question
-```
+No OTA updates? Delete `app.js` and `workers/main.js`, then remove every `app`
+reference in `bin.mjs` — the import, the `new App(...)`, `onApplyUpdate`, the
+`if (app)` block, and the two in `teardown()`/startup — plus `this.updater` and
+`onApplyUpdate` in `ui/app.js`. Grepping for `app` and `updater` finds the lot.
 
-### Thinking models
+No TUI? `lib/inference.js` is a standalone client — `new Inference({ model })`,
+`await ready()`, `ask(history)`, listen for `delta`.
 
-Reasoning models (`HEALTHCARE_4B_MEDICAL_Q8_0`, the Qwen3 family, …) emit a `<think>` block before answering. The app asks for `captureThinking`, so reasoning arrives as separate events instead of raw tags in the reply. It streams live while the model works, then collapses:
+## The UI
 
-```
- ✻ thought for 2.4s · ctrl+t to show
- Common causes include poor sleep, anaemia, thyroid problems, and depression.
-```
+`ui/app.js` is a plain [bare-tui] model: state in the constructor, messages
+folded in `update()`, a pure `view()`. It knows nothing about QVAC — inference
+reaches it as the `qvac.*` messages above.
 
-Reasoning is deliberately **not** replayed as history. It is per-turn scratch work, and sending it back is the fastest way to exhaust the context window — which is what makes the second and third answers truncate.
+To change it, read [bare-tui's CLAUDE.md][bare-tui-claude], or hand that file to
+your coding agent along with what you want. The message table above is the entire
+contract a replacement has to honour.
 
-### Updates
+## Updates
 
-OTA updates are off until you supply your own key: `package.json`'s `upgrade` field starts as the placeholder `pear://<YOUR_KEY_HERE>`, and the app skips the updater and says so in the transcript rather than crashing. Create a link with [`pear touch`](https://docs.pears.com/reference/cli.html#pear-touch-flags-channel), paste it into `upgrade`, then:
+Off by default until you supply a key. Create one with
+[`pear touch`](https://docs.pears.com/reference/cli.html#pear-touch-flags-channel),
+paste it into `package.json`'s `upgrade`, then `npm start -- --updates`.
 
-```sh
-npm start -- --updates
-```
-
-When a new build finishes downloading, a banner appears at the bottom — and nothing else moves until you act on it:
-
-```
-╭──────────────────────────────────────────────────────────────────╮
-│ ❯ ask the model something…                                       │
-╰──────────────────────────────────────────────────────────────────╯
-  ↵ send · pgup/pgdn scroll · ctrl+c quit
-  ✓ Update v0.1.0 ready — press ctrl+r to update, esc to dismiss
-```
-
-`ctrl+r` applies it, `esc` dismisses. See [The update banner](#the-update-banner).
-
-## Architecture
-
-```
-bin.mjs                    CLI parsing, and the one place the outside world
-   │                       is wired to the UI
-   ├── app.js ──────────── workers/main.js     OTA updates   (Bare thread)
-   ├── lib/inference.js ── workers/qvac.js     @qvac/inference (Bare thread)
-   └── ui/app.js                               bare-tui model + update banner
-```
-
-### Two workers, one pattern
-
-Both workers are started with `PearRuntime.run(...)` and spoken to over a `FramedStream`. `lib/inference.js` is deliberately the same shape as `app.js` — a `ReadyResource` that owns an IPC pipe and turns frames into events — so learning one teaches you the other.
-
-Inference gets its own thread for two reasons worth knowing before you restructure this:
-
-1. **Loading a GGUF blocks the thread it runs on.** In-process, that stalls the event loop for seconds and the spinner visibly stutters. On its own thread the UI stays responsive. Generation itself is already async and never blocks.
-2. **Crash isolation.** A native addon fault takes down its thread, not your terminal.
-
-### The inference protocol
-
-One JSON object per frame, `t` is the tag. `id` correlates an answer with the request that asked for it.
-
-| direction | frame                          | meaning                           |
-| --------- | ------------------------------ | --------------------------------- |
-| →         | `{ t: 'ask', id, history }`    | answer this conversation          |
-| →         | `{ t: 'cancel', id }`          | stop that answer                  |
-| →         | `{ t: 'close' }`               | unload the model and shut down    |
-| ←         | `{ t: 'progress', percentage}` | model download, 0–100             |
-| ←         | `{ t: 'loaded', model }`       | resident and ready                |
-| ←         | `{ t: 'delta', id, text }`     | a token                           |
-| ←         | `{ t: 'end', id }`             | answer finished, or was cancelled |
-| ←         | `{ t: 'error', id, message }`  | something went wrong              |
-| ←         | `{ t: 'closed' }`              | safe to terminate the thread      |
-
-Cancelling is precise: `completion()` exposes a `requestId` synchronously, so `esc` cancels exactly the one in-flight request rather than everything on the model.
-
-The `close` handshake matters. A resident model holds native handles that keep the process alive — without unloading first, the app hangs at exit instead of quitting.
-
-`stopReason` matters just as much. `run.events` ends **normally** when a completion fails or runs out of context, and `run.final` carries the reason — so a worker that only reads deltas reports a truncated answer as a clean finish. The worker awaits `final` and forwards the reason; the UI turns `length` into a visible warning.
-
-### The UI
-
-`ui/app.js` is a plain [bare-tui] model: state in the constructor, messages folded in `update()`, a pure `view()`. It never imports the QVAC SDK. Inference arrives as messages (`qvac.delta`, `qvac.end`, …) that `bin.mjs` forwards from the worker, and requests leave through Cmds.
-
-That split is the point: the whole UI is testable with no model, no GPU and no terminal. `test/index.js` drives streaming, interruption, stale-result handling and layout in ~150 ms — see [bare-tui's CLAUDE.md][bare-tui-claude] for the patterns it follows.
-
-### The update banner
-
-Updates are **confirm-gated**. `app.js` stages a new build but deliberately does not apply it — swapping the binary out from under someone mid-conversation is not a good default. [bare-tui-updater] renders the prompt and `bin.mjs` connects the two:
+`app.js` stages a new build but never applies it — nothing swaps out from under a
+conversation. [bare-tui-updater] renders the confirm prompt and `bin.mjs` connects
+the two in one line:
 
 ```js
 wire(ui.updater, { updater: app, send: program.send.bind(program) })
 ```
 
-`wire()` expects a `pear-runtime` updater — an emitter of `updating` / `updated` / `error` with a `nextVersion`. `App` already is one, so it can be passed straight in, even though the real updater lives over in the worker thread. Accepting calls `app.applyUpdate()`, which resolves only once the worker confirms, so the banner can tell "applying…" from "restart to use it".
+`ctrl+r` applies, `esc` dismisses. To ship a standalone: set `upgrade`, then follow
+[hello-pear-electron from step 4](https://github.com/holepunchto/hello-pear-electron#4-build-deployment-directory-),
+and install with `npx pear-install pear://<key>`.
 
-Two things are worth knowing if you restyle this:
+## Build and ship
 
-- **The banner is chrome, and it is measured, not counted.** It occupies zero rows while idle and 1 or 3 when visible, depending on the installed version. `_bannerHeight()` measures what it actually renders and `_layout()` subtracts it, so the view stays exactly as tall as the terminal either way. In `view()`, the `.filter(Boolean)` is load-bearing — an empty string would still take a row.
-- **Its default keys collide with this app.** bare-tui-updater accepts on `enter` as well as its accept key, and defaults that key to `u`. Here `enter` sends a question and `u` is an ordinary letter, so the banner is given `acceptKey: 'ctrl+r'` and only ever sees the two keys it owns — the rest is routed by the app first. `esc` interrupts an answer while busy and dismisses the banner otherwise. There are tests for all three.
+- `npm start` — dev mode (`bare bin.mjs --no-updates`)
+- `npm test` — headless tests, no model required
+- `npm run lint` / `npm run format` — prettier and lunte
+- `npm run make` — standalone binary for this host into `out/make`
+- `npm run make:<platform>-<arch>` — a specific target (`HOST=linux-arm64` also works)
 
-> **Note:** `border: false` (a one-line banner instead of a box) needs a `bare-tui-updater` newer than the published `0.0.1`. The option is passed already and the layout measures the result, so the app picks up the single-line look the moment a newer version is installed — no code change.
-
-## Making it yours
-
-- **Different model** — `--model`, or `qvac.model` in `package.json`.
-- **Different modality** — `workers/qvac.js` registers exactly one plugin. Swap `llamacpp-completion` for `whispercpp-transcription`, `llamacpp-embedding`, `tts-ggml`, `sdcpp-generation`, … and the peer dependency that backs it. Plugins are explicit in QVAC: nothing you don't register gets linked in.
-- **Different UI** — replace `ui/app.js`. The protocol above is the whole contract.
-- **A system prompt, tools, RAG** — `ask()` in `workers/qvac.js` takes the full history; `completion()` also accepts `tools`, `responseFormat` and `kvCache`.
-- **Update behaviour** — `mode: 'silent'` in `ui/app.js` applies without asking; `'notify-only'` just narrates. Restarting after an apply is left to you on purpose — see [bare-tui-updater's README][bare-tui-updater] for the re-exec pattern.
-
-## Peer-to-Peer Deployments
-
-Set `upgrade` in `package.json` to your distribution drive link, then follow the default flow from section 4 onward:
-
-[hello-pear-electron: 4. Build Deployment Directory and onward](https://github.com/holepunchto/hello-pear-electron#4-build-deployment-directory-)
-
-Once the link is seeding, install the standalone peer-to-peer:
-
-```sh
-npx pear-install pear://<key>
-```
-
-## Scripts
-
-- `npm start` — run in dev mode (`bare bin.mjs --no-updates`)
-- `npm test` — headless `brittle-bare` tests, no model required
-- `npm run lint` — prettier check and lunte
-- `npm run format` — format with prettier
-- `npm run make` — standalone for the current host into `out/make`
-- `npm run make:<platform>-<arch>` — standalone for a specific target
-
-Set `HOST` to override the target used by `npm run make`:
-
-```sh
-HOST=linux-arm64 npm run make
-```
-
-### Signing Standalones
-
-`npm run make` supports the signing credentials provided by the [`make-pear-app` GitHub Action][make-pear-app]:
-
-- On macOS, set `MAC_CODESIGN_IDENTITY` to sign with the hardened runtime. Set `KEYCHAIN_PROFILE` as well to submit to Apple's notary service.
-- On Windows, set `WINDOWS_CERT_SHA1` to sign with the matching certificate from the current user's store.
-
-## Project Structure
-
-- `bin.mjs` — CLI entrypoint; wires workers to the UI
-- `ui/app.js` — the bare-tui model (all the UI lives here), including the update banner
-- `lib/inference.js` — client for the inference worker
-- `workers/qvac.js` — loads the model, streams tokens
-- `app.js` — client for the OTA updater worker; stages updates, applies on request
-- `workers/main.js` — the OTA updater worker
-- `scripts/make.js` — standalone builder with signing and notarization
-- `test/index.js` — headless tests
-- `CLAUDE.md` — how to extend this template, and the traps it already hit
+`npm run make` picks up the signing credentials from the
+[`make-pear-app` GitHub Action][make-pear-app]: `MAC_CODESIGN_IDENTITY` (plus
+`KEYCHAIN_PROFILE` to notarize) on macOS, `WINDOWS_CERT_SHA1` on Windows.
 
 ## Troubleshooting
 
-- **`ggml_vulkan: …` / `initFromConfig: …` printed over the UI.** llama.cpp writes these to stderr with `fprintf`, below any JS logger — the SDK's `logger` option and `modelConfig.verbosity` do not gate them, and Bare has no `dup2` to redirect the fd. `bin.mjs` repairs the screen with a full repaint once the model is loaded. Harmless.
-- **First run seems stuck at 0%.** It is fetching ~1 GB. Progress updates as blocks arrive.
-- **`INVALID_URL: Invalid URL 'pear://<YOUR_KEY_HERE>'`** means the updater ran with the placeholder key. Run `pear touch` and paste the link into `package.json`.
-- **The app hangs on exit.** The model must be unloaded before the thread can go away — that is what the `close` handshake in `lib/inference.js` is for.
-- **Answers stop mid-sentence, worse on the second or third reply.** The context window is full. Raise `--ctx`. The app flags this now, but if you have changed the worker, check `stopReason === 'length'`.
-- **Raw `<think>` tags in the reply.** `captureThinking` isn't on for that call — see `ask()` in `workers/qvac.js`.
-- **Out of memory / very slow.** Try a smaller quantisation or a smaller model via `--model`. Large models on an integrated GPU can run at a few tokens/second.
-- **The update banner shows no version number.** `hello-pear-worker` doesn't forward `nextVersion` over the pipe, so `App.nextVersion` stays null and the banner omits it. Forward it from your own updater worker if you want it.
-- **An update downloaded but nothing happened.** That is the confirm gate working — press `ctrl+r`. Applying does not restart the process; relaunch to run the new build.
+| Symptom                                    | Cause / fix                                                                |
+| ------------------------------------------ | -------------------------------------------------------------------------- |
+| `ggml_vulkan: …` printed over the UI       | llama.cpp writes to fd 2 below any JS logger; `bin.mjs` repaints. Harmless |
+| Stuck at 0% on first run                   | fetching ~1 GB — it updates as blocks arrive                               |
+| Answers stop mid-sentence, worse each turn | context window full — raise `--ctx`                                        |
+| Raw `<think>` tags in the reply            | `captureThinking` is off for that call — see `ask()`                       |
+| `INVALID_URL 'pear://<YOUR_KEY_HERE>'`     | the updater ran with the placeholder key — run `pear touch`                |
+| Hangs on exit                              | the model must be unloaded first — that's the `close` handshake            |
+| Out of memory, or a few tokens/second      | smaller model or quantisation via `--model`                                |
+| An update downloaded but nothing happened  | the confirm gate — press `ctrl+r`; relaunch to run the new build           |
+| Banner shows no version number             | `hello-pear-worker` doesn't forward `nextVersion` over the pipe            |
+
+## Also
+
+[CLAUDE.md](CLAUDE.md) — how to extend this template, the invariants worth
+keeping, and every trap this repo has already hit and fixed. Point your agent at
+it before asking for changes.
 
 <!-- Reference Links -->
 
-[pear-docs]: https://docs.pears.com
-[pear-runtime]: https://github.com/holepunchto/pear-runtime
 [Bare]: https://github.com/holepunchto/bare
 [bare]: https://github.com/holepunchto/bare
 [bare-tui]: https://github.com/holepunchto/bare-tui
@@ -271,5 +280,4 @@ HOST=linux-arm64 npm run make
 [bare-tui-claude]: https://github.com/holepunchto/bare-tui/blob/main/CLAUDE.md
 [QVAC]: https://qvac.tether.io
 [nodejs]: https://nodejs.org
-[bare-build]: https://github.com/holepunchto/bare-build
 [make-pear-app]: https://github.com/holepunchto/actions/tree/main/make-pear-app

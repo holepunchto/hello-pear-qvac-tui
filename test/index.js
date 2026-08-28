@@ -1,7 +1,8 @@
 const { test } = require('brittle')
 const { PassThrough, Writable } = require('bare-stream')
 const { Program, style } = require('bare-tui')
-const { App, wrap } = require('../ui/app.js')
+const { App } = require('../ui/app.js')
+const { wrap } = require('../ui/transcript.js')
 
 // A stand-in for lib/inference.js: records what the UI asked for and lets the
 // test push tokens back. No worker, no model, no GPU.

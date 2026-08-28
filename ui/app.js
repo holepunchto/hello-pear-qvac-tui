@@ -1,4 +1,4 @@
-// The TUI — a bare-tui model for an ask/answer session against a local model.
+// The whole UI. Replace this file to change how the app looks and behaves.
 //
 // It is a plain Elm-architecture model: state in the constructor, messages
 // folded in update(), a pure view(). It never touches the QVAC SDK directly.
@@ -6,8 +6,11 @@
 // forwards from the worker, and outgoing requests leave through Cmds. That
 // split is what makes this file testable with no model, no GPU and no
 // terminal — see test/index.js.
+//
+// Drawing one conversation entry lives in ui/transcript.js.
 const { quit, batch, key, style, spinner, textinput, viewport, progress } = require('bare-tui')
 const updater = require('bare-tui-updater')
+const { entryLines } = require('./transcript.js')
 
 const ACCENT = '#5BC8FF'
 const ACCENT_2 = '#7AA2F7'
@@ -22,33 +25,6 @@ const MIN_WIDTH = 24
 // would be taller than the terminal, which scrolls it and desyncs the diff
 // renderer's row addressing.
 const MIN_HEIGHT = 10
-
-// Word-wrap plain text to a column width. Measures visible cells, so it stays
-// correct once the text has color in it.
-function wrap(text, w) {
-  const out = []
-
-  for (const para of String(text).split('\n')) {
-    if (para === '') {
-      out.push('')
-      continue
-    }
-
-    let line = ''
-    for (const word of para.split(/\s+/)) {
-      if (!word) continue
-      if (line && style.width(line) + 1 + style.width(word) > w) {
-        out.push(line)
-        line = word
-      } else {
-        line = line ? line + ' ' + word : word
-      }
-    }
-    out.push(line)
-  }
-
-  return out
-}
 
 class App {
   constructor({ inference, model, version, onApplyUpdate } = {}) {
@@ -399,117 +375,23 @@ class App {
     // it is rebuilt each frame. Everything above it is finished text.
     const live = this.phase === 'busy' ? this.entries.length - 1 : -1
 
+    // Everything outside an entry that changes how it draws. It is also the
+    // cache key in entryLines(), so anything added here must be added there.
+    const opts = {
+      width: w,
+      accent: ACCENT,
+      showThinking: this.showThinking,
+      ctxSize: this.ctxSize,
+      spinner: this.spinner.view()
+    }
+
     const out = []
     for (let i = 0; i < this.entries.length; i++) {
       if (out.length) out.push('')
-      for (const line of this._entryLines(this.entries[i], w, i === live)) out.push(line)
+      for (const line of entryLines(this.entries[i], opts, i === live)) out.push(line)
     }
 
     return out.map((line) => ' ' + line).join('\n')
-  }
-
-  // Wrapping is the expensive part of a frame, and a thinking model emits on
-  // the order of a thousand deltas per answer. Re-wrapping the whole
-  // transcript each time is quadratic in conversation length, so finished
-  // entries are wrapped once and cached against everything that affects how
-  // they render.
-  _entryLines(e, w, live) {
-    if (live) return this._buildEntry(e, w)
-
-    const sig = [
-      w,
-      e.role,
-      e.text.length,
-      e.thinking ? e.thinking.length : 0,
-      e.thoughtMs || 0,
-      e.interrupted ? 1 : 0,
-      e.truncated ? 1 : 0,
-      e.color || '',
-      this.showThinking ? 1 : 0,
-      this.ctxSize
-    ].join('|')
-
-    if (e._sig !== sig) {
-      e._lines = this._buildEntry(e, w)
-      e._sig = sig
-    }
-
-    return e._lines
-  }
-
-  _buildEntry(e, w) {
-    const out = []
-    const push = (s) => out.push(s)
-
-    if (e.role === 'user') {
-      const lines = wrap(e.text, w - 2)
-      const mark = style().bold(true).foreground(ACCENT).render('❯')
-      push(
-        `${mark} ${style()
-          .bold(true)
-          .render(lines[0] || '')}`
-      )
-      for (const l of lines.slice(1)) push('  ' + l)
-      return out
-    }
-
-    if (e.role === 'system') {
-      for (const l of wrap(e.text, w)) {
-        push(
-          style()
-            .faint(true)
-            .foreground(e.color || null)
-            .render(l)
-        )
-      }
-      return out
-    }
-
-    // assistant
-    this._renderThinking(e, push, w)
-
-    if (!e.text && !e.thinking) {
-      push(
-        style().foreground(ACCENT).render(this.spinner.view()) +
-          ' ' +
-          style().italic(true).faint(true).render('thinking…')
-      )
-    } else if (e.text) {
-      for (const l of wrap(e.text, w)) push(l)
-    }
-
-    if (e.interrupted) push(style().foreground('red').render('⎚ interrupted'))
-
-    if (e.truncated) {
-      push(
-        style()
-          .foreground('yellow')
-          .render(`⚠ stopped at the ${this.ctxSize || ''} token context limit`) +
-          style().faint(true).render(' — raise --ctx, or start a new question')
-      )
-    }
-
-    return out
-  }
-
-  // Reasoning streams live while the model works, then collapses to one line
-  // once the answer starts. ctrl+t expands it again.
-  _renderThinking(e, push, w) {
-    if (!e.thinking) return
-
-    const streaming = !e.text
-    if (streaming || this.showThinking) {
-      const head = streaming
-        ? style().foreground(ACCENT).render(this.spinner.view())
-        : style().faint(true).render('✻')
-      push(head + ' ' + style().italic(true).faint(true).render('thinking'))
-      for (const l of wrap(e.thinking, w - 2)) push('  ' + style().faint(true).render(l))
-      if (!streaming) push('')
-      return
-    }
-
-    const took = e.thoughtMs ? ` for ${(e.thoughtMs / 1000).toFixed(1)}s` : ''
-    push(style().faint(true).render(`✻ thought${took} · ctrl+t to show`))
   }
 
   // ── view ─────────────────────────────────────────────────────────────────
@@ -589,4 +471,4 @@ class App {
   }
 }
 
-module.exports = { App, wrap }
+module.exports = { App }

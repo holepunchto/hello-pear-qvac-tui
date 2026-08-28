@@ -19,7 +19,12 @@ bin.mjs                    CLI + the only place workers meet the UI
    ├── app.js ──────────── workers/main.js     OTA updates    (Bare thread)
    ├── lib/inference.js ── workers/qvac.js     @qvac/inference (Bare thread)
    └── ui/app.js                               bare-tui model + update banner
+          └── ui/transcript.js                 drawing one entry (pure)
 ```
+
+The README's [How one question flows](README.md#how-one-question-flows) traces a
+single keystroke through all four layers, naming the function at each hop. Read
+it once before changing anything that crosses a layer.
 
 **The load-bearing idea is that `ui/app.js` never imports the QVAC SDK.**
 Inference arrives as messages (`qvac.delta`, `qvac.end`, …) that `bin.mjs`
@@ -33,7 +38,7 @@ layers owns it**:
 
 | Change                                        | Touch                                                        |
 | --------------------------------------------- | ------------------------------------------------------------ |
-| How something looks, or a new key             | `ui/app.js` only                                             |
+| How something looks, or a new key             | `ui/app.js` (`ui/transcript.js` for entry drawing)           |
 | What the model is asked, tools, system prompt | `workers/qvac.js` (+ protocol)                               |
 | A new kind of event reaching the UI           | worker → `lib/inference.js` → `bin.mjs` bridge → `ui/app.js` |
 
@@ -52,6 +57,13 @@ tracks, so the flip breaks every one of them to fix one dynamic import.
 
 If you add a file, match its neighbours: `.js` under `lib/`, `ui/`, `workers/`
 is CJS; only `bin.mjs` is ESM.
+
+This template tracks [hello-pear-bare][hello-pear-bare], so keep diffs against it
+small. One deliberate divergence: `corestore`, `hyperswarm` and
+`graceful-goodbye` are **not** dependencies here. Nothing in this repo imports
+them and `hello-pear-worker` declares all three itself, so they were dropped to
+keep the dependency list equal to what the app actually uses. Don't add them back
+during a template sync without a reason.
 
 ## The worker protocol is the contract
 
@@ -205,7 +217,10 @@ Three specific things:
 
 - **The update banner is chrome too.** 0 rows idle, 1 or 3 when visible
   depending on the installed version. `_bannerHeight()` measures what it
-  actually renders rather than assuming, and `_layout()` subtracts it.
+  actually renders rather than assuming, and `_layout()` subtracts it. The
+  single-line look needs a `bare-tui-updater` newer than the published `0.0.1`;
+  `border: false` is passed already, so it appears on upgrade with no code
+  change — which is exactly why the height is measured and not hardcoded.
 - **`.filter(Boolean)` in `view()` is load-bearing.** The banner renders `''`
   when idle, and an empty string still occupies a row when joined.
 - **Clamp the terminal size.** A detached or half-initialised terminal reports
@@ -219,11 +234,16 @@ the text is pre-wrapped by `wrap()`, which measures visible cells. Never use
 **Wrapping is the expensive part of a frame**, and a thinking model emits on the
 order of a thousand deltas per answer. Re-wrapping the whole transcript on each
 one is quadratic in conversation length — measured at 3.7 ms/delta with no
-history rising to 7.2 ms at six turns. `_entryLines()` caches finished entries
-against a signature of everything that affects their rendering, which flattens
-it to ~3.3 ms regardless of depth. If you add a field that changes how an entry
-looks, **add it to that signature** or the entry will render stale. The live
-entry is never cached, because its spinner animates.
+history rising to 7.2 ms at six turns. `entryLines()` in
+[ui/transcript.js](ui/transcript.js) caches finished entries against a signature
+of everything that affects their rendering, which flattens it to ~3.3 ms
+regardless of depth. The live entry is never cached, because its spinner
+animates.
+
+That file is pure: entry in, styled lines out, all app state arriving in an
+`opts` object built once per frame by `_transcript()`. **If you add anything to
+`opts`, or a field that changes how an entry looks, add it to the signature
+too** — otherwise the entry keeps rendering its stale version.
 
 ## Extending it
 
@@ -273,8 +293,9 @@ worker whether to execute and loop, or forward them for the UI to render.
 
 ### A different UI
 
-Replace `ui/app.js`. The protocol above is the entire contract, and the tests
-show what a host has to handle.
+Replace `ui/app.js` and `ui/transcript.js`. The protocol above is the entire
+contract, and the tests show what a host has to handle. bare-tui's own
+[CLAUDE.md][bare-tui-claude] is the reference for the widgets and the Elm loop.
 
 ## Testing
 
@@ -325,9 +346,10 @@ or `bin.mjs`, and confirm it **exits cleanly on ctrl+c** rather than hanging.
 - SDK imported into `ui/app.js` → the fast, GPU-free test suite is gone.
 - Reporting "done" without checking `stopReason` → truncated answers look complete.
 - Reasoning replayed as history → context fills up, later answers get cut short.
-- New entry field that affects rendering, missing from the `_entryLines` signature → stale rows.
+- New entry field that affects rendering, missing from `entryLines`'s signature → stale rows.
 
 <!-- Reference Links -->
 
 [bare-tui-claude]: https://github.com/holepunchto/bare-tui/blob/main/CLAUDE.md
 [bare-tui-updater]: https://github.com/holepunchto/bare-tui-updater
+[hello-pear-bare]: https://github.com/holepunchto/hello-pear-bare
