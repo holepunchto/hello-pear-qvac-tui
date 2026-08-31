@@ -33,6 +33,13 @@ npm install
 npm start
 ```
 
+or load a special model like health
+
+```sh
+npm start -- --model HEALTHCARE_4B_MEDICAL_Q8_0
+```
+
+
 First run downloads ~1 GB of model weights and caches them, so it takes a while;
 later runs start in seconds.
 
@@ -139,7 +146,7 @@ Most ideas need no new dependency — just a different prompt and output format 
 | 20 questions, word games        | `responseFormat`, so a turn parses instead of scans       |
 | An agent that runs things       | `tools` on `completion()`; execute in the worker and loop |
 | Commit messages, diff explainer | pipe stdin in as the first history entry, drop the TUI    |
-| Notes or journal summariser     | same, plus `kvCache` to keep a long document resident     |
+| Notes or journal summariser     | same, plus `hyperbee` to keep a long document resident    |
 
 `responseFormat` is the unlock for anything game-shaped: the model hands back
 parseable state instead of prose you have to regex.
