@@ -33,15 +33,15 @@ npm install
 npm start
 ```
 
-or load a special model like health
-
-```sh
-npm start -- --model HEALTHCARE_4B_MEDICAL_Q8_0
-```
-
-
 First run downloads ~1 GB of model weights and caches them, so it takes a while;
 later runs start in seconds.
+
+Any other model is one flag away — see [Models that work out of the
+box](#models-that-work-out-of-the-box):
+
+```sh
+npm start -- --model QWEN3_1_7B_INST_Q4
+```
 
 | key           | does                                    |
 | ------------- | --------------------------------------- |
@@ -119,7 +119,7 @@ Adding a message type means touching those same four files, in that order.
 ## The two knobs that matter
 
 ```sh
-npm start -- --model LLAMA_3_2_3B_INST_Q4_0 --ctx 16384
+npm start -- --model QWEN3_4B_INST_Q4_K_M --ctx 16384
 ```
 
 **`--model`** — any model constant exported by `@qvac/inference`. Nothing else
@@ -131,6 +131,46 @@ addon's default is 1024 tokens**, small enough that a couple of turns leave no
 room to reply and answers stop mid-sentence. This template sets `8192`. If an
 answer does hit the ceiling the app says so rather than pretending the model
 finished.
+
+### Models that work out of the box
+
+Every one of these is a `llamacpp-completion` model, which is the plugin this
+template already registers — no new dependency, no code change, just the flag.
+Sizes are the download; the model is cached after the first run.
+
+| Model                        | Size     | Good for                                                               |
+| ---------------------------- | -------- | ---------------------------------------------------------------------- |
+| `QWEN3_600M_INST_Q4`         | 0.38 GB  | a _thinking_ model that fits in a pocket; try `ctrl+t`                 |
+| `SMOLLM2_360M_INST_Q8`       | 0.39 GB  | the fastest thing here — smoke tests, CI, weak hardware                |
+| `LLAMA_3_2_1B_INST_Q4_0`     | 0.77 GB  | the default — a good general baseline                                  |
+| `QWEN3_1_7B_INST_Q4`         | 1.06 GB  | noticeably better answers, still fast                                  |
+| `QWEN3_4B_INST_Q4_K_M`       | 2.50 GB  | the sweet spot on most laptops                                         |
+| `HEALTHCARE_4B_MEDICAL_Q8_0` | 4.69 GB  | domain-tuned and reasoning-heavy — what a specialised model looks like |
+| `QWEN3_8B_INST_Q4_K_M`       | 5.03 GB  | the largest that stays comfortable on a 16 GB machine                  |
+| `GPT_OSS_20B_INST_Q4_K_M`    | 11.62 GB | wants a real GPU; expect a long first download                         |
+
+```sh
+npm start -- --model HEALTHCARE_4B_MEDICAL_Q8_0
+```
+
+Rules of thumb: **Q4 is the everyday quantisation**, Q8 is bigger and slightly
+better, and anything above ~4B on an integrated GPU runs at a few tokens per
+second. A reasoning model spends its first hundreds of tokens thinking, so give
+it context — `--ctx 8192` or more.
+
+There are 37 text models in the registry, plus vision, speech, embedding and
+image-generation ones that need a different plugin (see
+[Different engine](#different-engine)). To list the text models your installed
+version offers, smallest first — save as `models.mjs` and run `bare models.mjs`:
+
+```js
+const m = await import('@qvac/inference')
+const rows = Object.entries(m)
+  .filter(([k, v]) => v?.engine === 'llamacpp-completion' && !/SHARD|TENSORS|MULTIMODAL/.test(k))
+  .map(([k, v]) => [(v.expectedSize / 1e9).toFixed(2) + ' GB', v.params, k])
+  .sort((a, b) => parseFloat(a[0]) - parseFloat(b[0]))
+for (const r of rows) console.log(r[0].padStart(8), String(r[1]).padStart(6), r[2])
+```
 
 ## Remix it
 
