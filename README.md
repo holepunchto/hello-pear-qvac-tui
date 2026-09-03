@@ -288,6 +288,8 @@ and install with `npx pear-install pear://<key>`.
 
 ## Build and ship
 
+### Building
+
 - `npm start` — dev mode (`bare bin.mjs --no-updates`)
 - `npm test` — headless tests, no model required
 - `npm run lint` / `npm run format` — prettier and lunte
@@ -297,6 +299,16 @@ and install with `npx pear-install pear://<key>`.
 `npm run make` picks up the signing credentials from the
 [`make-pear-app` GitHub Action][make-pear-app]: `MAC_CODESIGN_IDENTITY` (plus
 `KEYCHAIN_PROFILE` to notarize) on macOS, `WINDOWS_CERT_SHA1` on Windows.
+
+### Shipping
+
+Use the [`pear`][pear-docs] CLI to deploy applications.
+
+The full release flow — stage, provision, and multisig — plus the Foundational Steps, release lines, and per-OS build/signing details now live in the Pear docs:
+
+- [Deploy your application](https://docs.pears.com/how-to/operate-an-app/manual-deployment/deployment) — the eight Foundational Steps, command by command
+- [Release pipeline](https://docs.pears.com/explanation/deployment-releasing-apps-p2p) — why stage, provision, and multisig exist and how they chain together
+- [Build desktop distributables](https://docs.pears.com/how-to/operate-an-app/build-and-package/build-desktop-distributables) — macOS, Windows, and Linux signing and notarization
 
 ## Troubleshooting
 
