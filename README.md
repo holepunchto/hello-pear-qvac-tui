@@ -360,6 +360,7 @@ it before asking for changes.
 
 <!-- Reference Links -->
 
+[pear-docs]: https://docs.pears.com
 [Bare]: https://github.com/holepunchto/bare
 [bare]: https://github.com/holepunchto/bare
 [bare-tui]: https://github.com/holepunchto/bare-tui
