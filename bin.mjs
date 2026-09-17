@@ -78,27 +78,56 @@ inference.on('progress', (percentage) => program.send({ type: 'qvac.progress', p
 inference.on('thinking', (id, text) => program.send({ type: 'qvac.thinking', id, text }))
 inference.on('delta', (id, text) => program.send({ type: 'qvac.delta', id, text }))
 inference.on('end', (id, stopReason) => program.send({ type: 'qvac.end', id, stopReason }))
-inference.on('answer-error', (id, message) => program.send({ type: 'qvac.error', id, message }))
-inference.on('error', (err) => program.send({ type: 'qvac.error', message: err.message }))
+inference.on('answer-error', (id, message) => repaint({ type: 'qvac.error', id, message }))
+inference.on('error', (err) => repaint({ type: 'qvac.error', message: err.message }))
+
+// Send a Msg *and* force the next frame to repaint every row.
+//
+// llama.cpp/ggml write their banner ("ggml_vulkan: Found 1 Vulkan devices…")
+// straight to fd 2 with fprintf, below any JS logger — the SDK's `logger`
+// option and `modelConfig.verbosity` don't gate them, and Bare has no dup2 to
+// redirect the fd. The updates worker logs to fd 1 the same way. Sharing our
+// thread, they land on the alt-screen, and an alt-screen that scrolled puts
+// every absolute row address the renderer uses permanently out — a row whose
+// text doesn't change again is then never repainted, so the screen keeps
+// showing state that is long gone. Nothing can stop the writes, so repair the
+// display instead, at every point where the outside world has just finished
+// talking to the same fd.
+function repaint(msg) {
+  program.renderer.clear()
+  program.send(msg)
+}
 
 inference.on('loaded', (loadedModel, loadedCtx) => {
-  // llama.cpp/ggml write their banner ("ggml_vulkan: Found 1 Vulkan devices…")
-  // straight to fd 2 with fprintf, below any JS logger — the SDK's `logger`
-  // option and `modelConfig.verbosity` don't gate them, and Bare has no dup2 to
-  // redirect the fd. Sharing our thread, they land on the alt-screen. Nothing
-  // can stop that, so repair it instead: drop the renderer's cache once the
-  // model is up and the next frame repaints every row.
-  program.renderer.clear()
-  program.send({ type: 'qvac.loaded', model: loadedModel, ctxSize: loadedCtx })
+  repaint({ type: 'qvac.loaded', model: loadedModel, ctxSize: loadedCtx })
 })
 
 if (app) {
+  // The banner has to be readable at the exact moment the updates worker has
+  // been logging to fd 1, so announce its state changes with a repaint. Not
+  // the progress deltas though — one full repaint per downloaded block is a
+  // lot of writing for a line that says the same thing each time.
+  const announce = (msg) => (msg.type === 'update.progress' ? program.send(msg) : repaint(msg))
+
   // App emits the same events pear-runtime's updater does ('updating',
   // 'updated', 'error') plus a `nextVersion`, which is the whole contract
   // wire() needs — so the banner drives itself from here on.
-  wire(ui.updater, { updater: app, send: program.send.bind(program) })
+  wire(ui.updater, { updater: app, send: announce })
 
-  app.on('message', (text) => program.send({ type: 'app.notice', text }))
+  app.on('message', (text) => announce({ type: 'app.notice', text }))
+
+  // app.js emits 'error' for a pipe or IPC failure and for a non-zero worker
+  // exit. ready() below only covers the opening handshake; an 'error' with no
+  // listener is rethrown as an uncaught exception, which no try/catch can
+  // reach and which takes the whole app down. Losing OTA updates should cost
+  // a line in the transcript, not the session.
+  app.on('error', (err) => announce({ type: 'app.notice', text: `[updater] ${line(err.message)}` }))
+}
+
+// One transcript entry is one line of chrome: a newline smuggled in from an
+// error message would add a row the layout never budgeted for.
+function line(text) {
+  return String(text).replace(/\s+/g, ' ').trim()
 }
 
 // ── lifecycle ─────────────────────────────────────────────────────────────
