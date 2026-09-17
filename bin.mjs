@@ -21,7 +21,8 @@ const cmd = command(
   flag('--storage <dir>', 'custom storage directory'),
   flag('--model <name>', 'QVAC model constant to load'),
   flag('--ctx <tokens>', 'context window in tokens (default 8192)'),
-  flag('--no-updates', 'disable OTA updates for this run')
+  flag('--no-updates', 'disable OTA updates for this run'),
+  flag('--verbose', 'log engine and native addon detail to stderr')
 )
 
 cmd.parse(Bare.argv.slice(isDev ? 2 : 1))
@@ -36,6 +37,8 @@ const storage = cmd.flags.storage || (isDev ? null : path.join(persistent(), app
 const dir = storage || path.join(os.tmpdir(), 'pear', appName)
 const model = cmd.flags.model || pkg.qvac.model
 const ctxSize = Number(cmd.flags.ctx) || pkg.qvac.ctxSize
+
+const verbose = cmd.flags.verbose === true
 
 // The updater needs a real Pear key. Until you publish and paste yours into
 // package.json's "upgrade", running it would throw inside the worker thread —
@@ -57,7 +60,7 @@ const app = updating
     })
   : null
 
-const inference = new Inference({ model, ctxSize })
+const inference = new Inference({ model, ctxSize, verbose })
 
 const ui = new UI({
   inference,
