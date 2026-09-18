@@ -119,6 +119,30 @@ if (app) {
 
   app.on('message', (text) => announce({ type: 'app.notice', text }))
 
+  // A staged update is not downloaded on sight — the updater defers the check
+  // by a random delay of up to an hour so a released fleet doesn't stampede the
+  // seeder. Say so, or the app looks inert for that whole window while it is in
+  // fact just waiting.
+  //
+  // `ms` is an upper bound, not the wait: an append inside the updater's 60s
+  // boot grace period is checked with no delay at all, but the event still
+  // carries the full random draw. Hence "within", and hence the restart hint —
+  // restarting lands inside that window, which is why stopping and starting the
+  // app is what makes a staged update show up.
+  app.on('update-scheduled', (ms) =>
+    announce({
+      type: 'app.notice',
+      text: `An update is scheduled within ${humanize(ms)}, or restart to claim it`
+    })
+  )
+
+  // Background updater trouble. It costs a transcript line rather than the
+  // banner: a check that can't complete tends to repeat, and a banner that
+  // flaps is worse than one that stays quiet until there is something to take.
+  app.on('updater-error', (err) =>
+    announce({ type: 'app.notice', text: `[updater] ${line(err.message)}` })
+  )
+
   // app.js emits 'error' for a pipe or IPC failure and for a non-zero worker
   // exit. ready() below only covers the opening handshake; an 'error' with no
   // listener is rethrown as an uncaught exception, which no try/catch can
@@ -131,6 +155,16 @@ if (app) {
 // error message would add a row the layout never budgeted for.
 function line(text) {
   return String(text).replace(/\s+/g, ' ').trim()
+}
+
+// Coarse on purpose: the delay is a random draw the user can do nothing about,
+// so the useful part is the order of magnitude, not the seconds.
+function humanize(ms) {
+  const mins = Math.round(ms / 60000)
+  if (mins < 1) return `${Math.max(1, Math.round(ms / 1000))}s`
+  if (mins < 60) return `${mins}m`
+  const hrs = Math.floor(mins / 60)
+  return mins % 60 === 0 ? `${hrs}h` : `${hrs}h ${mins % 60}m`
 }
 
 // ── lifecycle ─────────────────────────────────────────────────────────────

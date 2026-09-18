@@ -195,6 +195,73 @@ chord and a dismiss `esc` to the banner, never the general key stream. If you
 add a component that wants keys, follow the same rule — route explicitly rather
 than broadcasting.
 
+### A staged update can take an hour to reach a running app
+
+`pear stage` reaches a running app instantly — the drive append lands in the
+same moment — but `pear-runtime-updater` does **not** check on sight. It defers
+the check by `this._delay`, a single random draw from `[0, 1h)` fixed for the
+life of the process, so that a released fleet doesn't converge on the seeder the
+instant a release is staged. The one exception is its 60-second boot grace
+period: an append within 60s of the updater starting is checked with no delay.
+
+That is the whole reason the banner "only appears when I restart the app" — a
+restart puts you back inside the grace window. Measured against a real stage:
+the running app saw the append at t+0s and scheduled its check 2174s later.
+
+**Don't shorten the delay to make a demo feel livelier.** `PearRuntimeUpdater`
+takes a `delay` option, but reaching it means not using `hello-pear-worker` —
+and a short delay is precisely the stampede the default exists to prevent. Every
+install that happens to be running when you stage would converge on the seeder
+at once, each pulling a whole standalone binary (this one is 265MB).
+
+Handle it like this instead:
+
+- **Say that you're waiting.** The worker forwards `update-scheduled <ms>`;
+  `app.js` turns it into an event and `bin.mjs` into a transcript line. An app
+  that says "update check scheduled in 36m" reads as working. One that says
+  nothing reads as broken — which is exactly how this got reported.
+- **Give the user the early exit.** Restarting checks immediately, and it costs
+  the seeder one client instead of all of them. That is the honest answer for a
+  demo, and it is already true without any code.
+- **If you really need it sooner, scope it to one install.** An explicit,
+  off-by-default flag, understood as "this machine opts out of the stagger", is
+  defensible on a demo box. A shortened _default_, shipped to every install, is
+  the stampede.
+
+Two things to keep straight when wording the UI for it:
+
+- `update-scheduled` fires on any append to the app's drive, not only on a newer
+  version — the version comparison happens later, in `_update()`. Say a _check_
+  is queued, not that an update is waiting.
+- The delay it carries is an upper bound. `PearRuntimeUpdater` emits
+  `this._delay` unconditionally, including in the boot-grace case where it
+  actually scheduled the check with no delay at all, so "within 5m" is honest
+  and "in 5m" is not.
+
+### Applying an update swaps the executable, on one filesystem only
+
+`PearRuntimeUpdater.applyUpdate()` finishes with `fsx.swap(nextApp, this.app)` —
+an atomic exchange, so a half-written executable never exists. Atomic means
+`renameat2(RENAME_EXCHANGE)`, and that requires both paths on the **same
+filesystem**. The staged build lives under the app's storage dir
+(`persistent()/<app>/pear-runtime/next/...`); `this.app` is wherever the binary
+was installed. Install the app onto a different mount from its storage and
+applying fails with `EXDEV: cross-device link not permitted`.
+
+This is easy to hit by accident: a demo that installs to `/tmp` lands on tmpfs
+on most Linux boxes, while `persistent()` is under `$HOME`. Install somewhere on
+the same filesystem as the storage dir and it works.
+
+The failure used to take the whole app with it. `hello-pear-worker`'s pipe
+handler is an `async` listener, so a rejection inside it is an unhandled
+rejection — Bare reports it as `Uncaught Error` and exits, which is the trap
+[below](#a-worker-that-throws-kills-the-process-uncatchably) in a different
+costume. It now catches and answers `pear:updateFailed <message>`; `app.js`
+rejects the pending `applyUpdate()` promise, and `bare-tui-updater` turns that
+into `✗ Update failed: …` in the banner. **Any new await you add to a worker's
+pipe handler needs the same treatment** — the listener is fire-and-forget, so a
+throw there is fatal rather than reported.
+
 ### Both spinners need the same tick
 
 The transcript spinner and the banner's spinner both consume `spinner.tick`.
@@ -341,6 +408,10 @@ or `bin.mjs`, and confirm it **exits cleanly on ctrl+c** rather than hanging.
 - Hardcoded chrome height → view one row too tall, terminal scrolls, screen jumps.
 - Empty banner string not filtered out of `view()` → a permanent blank row.
 - Broadcasting keys to the update banner → `enter` applies an update instead of sending.
+- Expecting a staged update to appear at once → deferred up to 1h; only a restart checks now.
+- Shortening the updater's delay so a demo looks snappy → every install stampedes the seeder.
+- App installed on a different mount from its storage → `EXDEV` when applying an update.
+- New `await` in a worker's pipe handler without a `try/catch` → uncaught rejection kills the app.
 - Async result applied after interrupt → tokens from a cancelled run in the next answer.
 - Non-serialisable value written to the pipe → silently dropped or a parse error.
 - SDK imported into `ui/app.js` → the fast, GPU-free test suite is gone.
