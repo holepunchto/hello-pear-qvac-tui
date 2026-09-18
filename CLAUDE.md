@@ -238,6 +238,30 @@ Two things to keep straight when wording the UI for it:
   actually scheduled the check with no delay at all, so "within 5m" is honest
   and "in 5m" is not.
 
+### Applying an update swaps the executable, on one filesystem only
+
+`PearRuntimeUpdater.applyUpdate()` finishes with `fsx.swap(nextApp, this.app)` —
+an atomic exchange, so a half-written executable never exists. Atomic means
+`renameat2(RENAME_EXCHANGE)`, and that requires both paths on the **same
+filesystem**. The staged build lives under the app's storage dir
+(`persistent()/<app>/pear-runtime/next/...`); `this.app` is wherever the binary
+was installed. Install the app onto a different mount from its storage and
+applying fails with `EXDEV: cross-device link not permitted`.
+
+This is easy to hit by accident: a demo that installs to `/tmp` lands on tmpfs
+on most Linux boxes, while `persistent()` is under `$HOME`. Install somewhere on
+the same filesystem as the storage dir and it works.
+
+The failure used to take the whole app with it. `hello-pear-worker`'s pipe
+handler is an `async` listener, so a rejection inside it is an unhandled
+rejection — Bare reports it as `Uncaught Error` and exits, which is the trap
+[below](#a-worker-that-throws-kills-the-process-uncatchably) in a different
+costume. It now catches and answers `pear:updateFailed <message>`; `app.js`
+rejects the pending `applyUpdate()` promise, and `bare-tui-updater` turns that
+into `✗ Update failed: …` in the banner. **Any new await you add to a worker's
+pipe handler needs the same treatment** — the listener is fire-and-forget, so a
+throw there is fatal rather than reported.
+
 ### Both spinners need the same tick
 
 The transcript spinner and the banner's spinner both consume `spinner.tick`.
@@ -386,6 +410,8 @@ or `bin.mjs`, and confirm it **exits cleanly on ctrl+c** rather than hanging.
 - Broadcasting keys to the update banner → `enter` applies an update instead of sending.
 - Expecting a staged update to appear at once → deferred up to 1h; only a restart checks now.
 - Shortening the updater's delay so a demo looks snappy → every install stampedes the seeder.
+- App installed on a different mount from its storage → `EXDEV` when applying an update.
+- New `await` in a worker's pipe handler without a `try/catch` → uncaught rejection kills the app.
 - Async result applied after interrupt → tokens from a cancelled run in the next answer.
 - Non-serialisable value written to the pipe → silently dropped or a parse error.
 - SDK imported into `ui/app.js` → the fast, GPU-free test suite is gone.

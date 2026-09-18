@@ -89,21 +89,45 @@ module.exports = class App extends ReadyResource {
       return
     }
 
+    // 'pear:updateFailed <message>' — applying the staged build did not work.
+    // Rejecting is what the banner needs: bare-tui-updater turns a rejected
+    // onAccept into 'update.error' and says so. Leaving the promise pending
+    // instead would park the banner on "Applying update…" for good.
+    if (message.startsWith('pear:updateFailed')) {
+      const reason = message.slice('pear:updateFailed'.length).trim()
+      const err = new Error(reason || 'update failed')
+      this.emit('update-failed', err)
+      this._applying?.reject(err)
+      this._applying = null
+      return
+    }
+
+    // 'updater-error <message>' — the updater failed in the background: a check
+    // that couldn't complete, no build published for this host. Distinct from
+    // 'pear:updateFailed', which answers an apply the user actually asked for.
+    if (message.startsWith('updater-error ')) {
+      this.emit('updater-error', new Error(message.slice('updater-error '.length)))
+      return
+    }
+
     this.emit('message', message)
   }
 
-  // Apply the staged update, resolving once the worker confirms. The updater
-  // banner awaits this to decide between "applying…" and "restart to use it".
+  // Apply the staged update, resolving once the worker confirms and rejecting
+  // if it couldn't. The updater banner awaits this to decide between
+  // "applying…", "restart to use it" and "update failed".
   applyUpdate() {
     if (this._applying) return this._applying.promise
 
     if (this.pipe === null) return Promise.reject(new Error('updater worker is not running'))
 
     let resolve
-    const promise = new Promise((r) => {
-      resolve = r
+    let reject
+    const promise = new Promise((res, rej) => {
+      resolve = res
+      reject = rej
     })
-    this._applying = { promise, resolve }
+    this._applying = { promise, resolve, reject }
 
     this._send('pear:applyUpdate')
 

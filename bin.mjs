@@ -136,6 +136,13 @@ if (app) {
     })
   )
 
+  // Background updater trouble. It costs a transcript line rather than the
+  // banner: a check that can't complete tends to repeat, and a banner that
+  // flaps is worse than one that stays quiet until there is something to take.
+  app.on('updater-error', (err) =>
+    announce({ type: 'app.notice', text: `[updater] ${line(err.message)}` })
+  )
+
   // app.js emits 'error' for a pipe or IPC failure and for a non-zero worker
   // exit. ready() below only covers the opening handshake; an 'error' with no
   // listener is rethrown as an uncaught exception, which no try/catch can
