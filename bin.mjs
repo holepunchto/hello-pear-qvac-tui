@@ -132,7 +132,7 @@ if (app) {
   app.on('update-scheduled', (ms) =>
     announce({
       type: 'app.notice',
-      text: `[updater] update check queued — within ${humanize(ms)}, or restart to check now`
+      text: `An update is scheduled within ${humanize(ms)}, or restart to claim it`
     })
   )
 
