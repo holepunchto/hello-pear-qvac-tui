@@ -59,6 +59,16 @@ module.exports = class App extends ReadyResource {
   _onmessage(data) {
     const message = data.toString()
 
+    // 'update-scheduled <ms>' — the updater saw the app's drive change and is
+    // holding the check for <ms> before it downloads anything. That wait is a
+    // random draw of up to an hour, so a fleet of installs doesn't hit the
+    // seeder the instant a release is staged. Surfacing it is the difference
+    // between "waiting" and "broken"; see CLAUDE.md before shortening it.
+    if (message.startsWith('update-scheduled ')) {
+      this.emit('update-scheduled', Number(message.slice('update-scheduled '.length)))
+      return
+    }
+
     if (message === 'updating') {
       this.emit('updating')
       return
