@@ -26,7 +26,7 @@
     "bare-path": "^3.0.0",
     "bare-process": "^4.5.0",
     "bare-storage": "^1.1.0",
-    "bare-tui": "^0.0.3",
+    "bare-tui": "^0.3.0",
     "bare-tui-updater": "^0.0.1",
     "framed-stream": "^1.0.1",
     "hello-pear-worker": "^1.0.0",
