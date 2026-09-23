@@ -19,9 +19,9 @@
     "make:win32-x64": "bare-build --name hello-pear-qvac --standalone --host win32-x64 --out ./out/win32-x64 bin.mjs"
   },
   "dependencies": {
-    "@qvac/inference": "^0.18.2",
+    "@qvac/inference": "^0.20.0",
     "@qvac/langdetect-text": "^0.1.2",
-    "@qvac/llm-llamacpp": "^0.45.0",
+    "@qvac/llm-llamacpp": "^0.53.2",
     "bare-os": "^3.9.0",
     "bare-path": "^3.0.0",
     "bare-process": "^4.5.0",
