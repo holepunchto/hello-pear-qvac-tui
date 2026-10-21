@@ -26,6 +26,10 @@ This is a **template**. The plumbing is finished — ~540 lines of CLI, worker a
 IPC you can leave alone — and the ~620-line UI on top is meant to be thrown away.
 Chat is just the demo; see [Remix it](#remix-it).
 
+## Related Repositories
+
+Pear has official templates for desktop, terminal, short-lived CLI, and mobile apps. See [Start from a template][from-a-template] to compare them and pick the one that matches what you're shipping.
+
 ## Run it
 
 ```sh
@@ -361,6 +365,7 @@ it before asking for changes.
 <!-- Reference Links -->
 
 [pear-docs]: https://docs.pears.com
+[from-a-template]: https://docs.pears.com/p2p/getting-started/from-a-template/
 [Bare]: https://github.com/holepunchto/bare
 [bare]: https://github.com/holepunchto/bare
 [bare-tui]: https://github.com/holepunchto/bare-tui
